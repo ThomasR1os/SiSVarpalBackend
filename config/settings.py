@@ -10,6 +10,12 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "clave-de-desarrollo-cambiar")
 DEBUG = os.environ.get("DJANGO_DEBUG", "True").lower() in {"1", "true", "yes"}
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "testserver"]
+CSRF_TRUSTED_ORIGINS = []
+
+render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if render_host:
+    ALLOWED_HOSTS.append(render_host)
+    CSRF_TRUSTED_ORIGINS.append(f"https://{render_host}")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
