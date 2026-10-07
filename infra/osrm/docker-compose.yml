@@ -1,0 +1,9 @@
+services:
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/data
+    command: osrm-routed --algorithm mld /data/lima-metro.osrm --max-table-size 1000 --max-viaroute-size 500
+    restart: unless-stopped

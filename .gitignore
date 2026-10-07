@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+infra/osrm/data/
+*.py[cod]
+.env
+media/
+staticfiles/
+*.sqlite3
+.pytest_cache/
+.mypy_cache/
