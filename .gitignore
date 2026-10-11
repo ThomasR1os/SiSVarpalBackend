@@ -3,6 +3,7 @@ __pycache__/
 infra/osrm/data/
 *.py[cod]
 .env
+.envNeon
 media/
 staticfiles/
 *.sqlite3

@@ -122,6 +122,8 @@ class DestinoViewSet(viewsets.ModelViewSet):
             observacion=serializer.validated_data.get("observacion", ""),
             fotos=request.FILES.getlist("fotos"),
             usuario=request.user,
+            hora_inicio_descarga=serializer.validated_data["hora_inicio_descarga"],
+            hora_fin_descarga=serializer.validated_data["hora_fin_descarga"],
         )
         return Response(DestinoSerializer(destino).data)
 

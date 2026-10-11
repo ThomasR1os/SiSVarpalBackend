@@ -209,14 +209,19 @@ class ReglasApiTests(TestCase):
         self.autenticar(self.conductor)
         sin_foto = self.client.post(
             f"/api/destinos/{self.destino.id}/cerrar/",
-            {"resultado": "EXITOSO"},
+            {"resultado": "EXITOSO", "hora_inicio_descarga": "10:00", "hora_fin_descarga": "10:20"},
             format="multipart",
         )
         self.assertEqual(sin_foto.status_code, 400, sin_foto.content)
         self.assertIn("fotos", sin_foto.data["errores"])
         sin_motivo = self.client.post(
             f"/api/destinos/{self.destino.id}/cerrar/",
-            {"resultado": "FALLIDO", "fotos": foto()},
+            {
+                "resultado": "FALLIDO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "10:00",
+                "hora_fin_descarga": "10:20",
+            },
             format="multipart",
         )
         self.assertEqual(sin_motivo.status_code, 400, sin_motivo.content)
@@ -224,6 +229,18 @@ class ReglasApiTests(TestCase):
         self.destino.refresh_from_db()
         self.assertEqual(self.destino.estado, Destino.Estado.EN_PROCESO)
         self.assertEqual(Ruta.objects.get(pk=ruta_id).estado, Ruta.Estado.EN_PROCESO)
+        fin_antes = self.client.post(
+            f"/api/destinos/{self.destino.id}/cerrar/",
+            {
+                "resultado": "EXITOSO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "11:00",
+                "hora_fin_descarga": "10:00",
+            },
+            format="multipart",
+        )
+        self.assertEqual(fin_antes.status_code, 400, fin_antes.content)
+        self.assertIn("hora_fin_descarga", fin_antes.data["errores"])
 
     def test_seguimiento_del_cliente_oculta_la_base_final(self):
         ruta_id = self._ruta_en_proceso()
@@ -246,10 +263,20 @@ class ReglasApiTests(TestCase):
         self.autenticar(self.conductor)
         cerrado = self.client.post(
             f"/api/destinos/{self.destino.id}/cerrar/",
-            {"resultado": "EXITOSO", "fotos": foto()},
+            {
+                "resultado": "EXITOSO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "2026-10-11T19:15:00Z",
+                "hora_fin_descarga": "14:40",
+            },
             format="multipart",
         )
         self.assertEqual(cerrado.status_code, 200, cerrado.content)
+        self.assertEqual(cerrado.data["hora_inicio_descarga"], "14:15:00")
+        self.assertEqual(cerrado.data["hora_fin_descarga"], "14:40:00")
+        self.destino.asignacion.refresh_from_db()
+        self.assertEqual(self.destino.asignacion.hora_inicio_descarga.isoformat(), "14:15:00")
+        self.assertEqual(self.destino.asignacion.hora_fin_descarga.isoformat(), "14:40:00")
         evidencia = Evidencia.objects.get(destino=self.destino)
         self.assertTrue(evidencia.archivo.startswith("https://res.cloudinary.com/"))
         self.autenticar(self.usuario_cliente)

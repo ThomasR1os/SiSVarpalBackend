@@ -1,4 +1,8 @@
+from datetime import datetime
+
 from django.conf import settings
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import serializers
 
 from catalogos.models import Cliente, Motivo, Punto, Vehiculo
@@ -18,7 +22,10 @@ class DestinoSerializer(serializers.ModelSerializer):
     cliente_id = serializers.IntegerField(source="cliente.id", read_only=True)
     sede_id = serializers.IntegerField(source="sede.id", read_only=True, allow_null=True)
     motivo_id = serializers.IntegerField(source="motivo.id", read_only=True, allow_null=True)
+    motivo_descripcion = serializers.SerializerMethodField()
     ruta_id = serializers.SerializerMethodField()
+    hora_inicio_descarga = serializers.SerializerMethodField()
+    hora_fin_descarga = serializers.SerializerMethodField()
 
     class Meta:
         model = Destino
@@ -43,16 +50,31 @@ class DestinoSerializer(serializers.ModelSerializer):
             "datos_extra",
             "estado",
             "motivo_id",
+            "motivo_descripcion",
             "observacion_cierre",
             "ruta_id",
+            "hora_inicio_descarga",
+            "hora_fin_descarga",
             "creado_en",
             "actualizado_en",
         ]
+
+    def get_motivo_descripcion(self, obj):
+        motivo = obj.motivo
+        if motivo is None:
+            return None
+        return motivo.descripcion
 
     def get_ruta_id(self, obj):
         if hasattr(obj, "asignacion"):
             return obj.asignacion.ruta_id
         return None
+
+    def get_hora_inicio_descarga(self, obj):
+        return _hora_parada(obj, "hora_inicio_descarga")
+
+    def get_hora_fin_descarga(self, obj):
+        return _hora_parada(obj, "hora_fin_descarga")
 
 
 class DestinoWriteSerializer(serializers.Serializer):
@@ -101,6 +123,8 @@ class ParadaSerializer(serializers.Serializer):
     hora_estimada = serializers.DateTimeField(allow_null=True)
     hora_llegada = serializers.DateTimeField(allow_null=True)
     hora_salida = serializers.DateTimeField(allow_null=True)
+    hora_inicio_descarga = serializers.TimeField(allow_null=True)
+    hora_fin_descarga = serializers.TimeField(allow_null=True)
 
 
 class RutaSerializer(serializers.ModelSerializer):
@@ -300,6 +324,19 @@ class NotificacionSerializer(serializers.ModelSerializer):
         fields = ["id", "ruta_id", "tipo", "titulo", "cuerpo", "leida", "creado_en"]
 
 
+class HoraLimaField(serializers.TimeField):
+    """Hora del día en America/Lima. Un datetime se convierte a esa zona antes de guardar la hora."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, datetime):
+            return _hora_en_lima(data)
+        if isinstance(data, str):
+            instante = parse_datetime(data.strip())
+            if instante is not None:
+                return _hora_en_lima(instante)
+        return super().to_internal_value(data)
+
+
 class CierreSerializer(serializers.Serializer):
     resultado = serializers.ChoiceField(choices=[Destino.Estado.EXITOSO, Destino.Estado.FALLIDO])
     motivo_id = serializers.PrimaryKeyRelatedField(
@@ -309,3 +346,28 @@ class CierreSerializer(serializers.Serializer):
         allow_null=True,
     )
     observacion = serializers.CharField(required=False, allow_blank=True)
+    hora_inicio_descarga = HoraLimaField()
+    hora_fin_descarga = HoraLimaField()
+
+    def validate(self, attrs):
+        if attrs["hora_fin_descarga"] < attrs["hora_inicio_descarga"]:
+            raise serializers.ValidationError(
+                {"hora_fin_descarga": ["La hora de fin de descarga no puede ser anterior al inicio."]}
+            )
+        return attrs
+
+
+def _hora_parada(destino, campo):
+    asignacion = getattr(destino, "asignacion", None)
+    if asignacion is None:
+        return None
+    valor = getattr(asignacion, campo)
+    if valor is None:
+        return None
+    return valor.isoformat()
+
+
+def _hora_en_lima(instante):
+    if timezone.is_naive(instante):
+        instante = timezone.make_aware(instante, timezone.get_current_timezone())
+    return timezone.localtime(instante).time().replace(microsecond=0)

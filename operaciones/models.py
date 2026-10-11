@@ -170,6 +170,8 @@ class RutaDestino(models.Model):
     hora_estimada = models.DateTimeField(null=True, blank=True)
     hora_llegada = models.DateTimeField(null=True, blank=True)
     hora_salida = models.DateTimeField(null=True, blank=True)
+    hora_inicio_descarga = models.TimeField(null=True, blank=True, verbose_name="inicio de descarga")
+    hora_fin_descarga = models.TimeField(null=True, blank=True, verbose_name="fin de descarga")
 
     class Meta:
         db_table = "ruta_destinos"

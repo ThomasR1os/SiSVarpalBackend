@@ -181,13 +181,27 @@ def validar_imagenes(archivos):
             raise ValidationError({"fotos": ["Cada archivo debe ser una imagen JPG, PNG o WEBP."]})
 
 
-def cerrar_destino(*, destino, resultado, motivo, observacion, fotos, usuario):
+def cerrar_destino(
+    *,
+    destino,
+    resultado,
+    motivo,
+    observacion,
+    fotos,
+    usuario,
+    hora_inicio_descarga,
+    hora_fin_descarga,
+):
     from operaciones.models import Evidencia
 
     if destino.estado != Destino.Estado.EN_PROCESO:
         raise ValidationError({"detail": "Solo se cierra un destino que está en proceso."})
     if resultado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
         raise ValidationError({"resultado": ["El resultado debe ser EXITOSO o FALLIDO."]})
+    if hora_fin_descarga < hora_inicio_descarga:
+        raise ValidationError(
+            {"hora_fin_descarga": ["La hora de fin de descarga no puede ser anterior al inicio."]}
+        )
     validar_imagenes(fotos)
     if resultado == Destino.Estado.FALLIDO:
         if motivo is None or not motivo.activo:
@@ -207,10 +221,20 @@ def cerrar_destino(*, destino, resultado, motivo, observacion, fotos, usuario):
                 archivo=subir_foto(foto, destino.id),
             )
         asignacion = getattr(destino, "asignacion", None)
-        if asignacion is not None:
-            asignacion.hora_llegada = asignacion.hora_llegada or ahora
-            asignacion.hora_salida = ahora
-            asignacion.save(update_fields=["hora_llegada", "hora_salida"])
+        if asignacion is None:
+            raise ValidationError({"detail": "El destino no está asignado a una ruta."})
+        asignacion.hora_llegada = asignacion.hora_llegada or ahora
+        asignacion.hora_salida = ahora
+        asignacion.hora_inicio_descarga = hora_inicio_descarga
+        asignacion.hora_fin_descarga = hora_fin_descarga
+        asignacion.save(
+            update_fields=[
+                "hora_llegada",
+                "hora_salida",
+                "hora_inicio_descarga",
+                "hora_fin_descarga",
+            ]
+        )
     return destino
 
 
