@@ -1,3 +1,5 @@
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
@@ -9,6 +11,8 @@ from operaciones.models import Destino
 from .fotos import subir_foto
 from .geo import poligono_activo, punto_dentro
 
+logger = logging.getLogger(__name__)
+
 
 CAMPOS_RECEPTOR = (
     "documento_receptor",
@@ -19,10 +23,8 @@ CAMPOS_RECEPTOR = (
 
 
 def _fecha_permitida(fecha, permitir_pasada=False):
-    if permitir_pasada:
-        return
-    if fecha < timezone.localdate():
-        raise ValidationError({"fecha": ["La fecha no puede ser anterior a hoy."]})
+    # Crear, editar y reprogramar aceptan una fecha anterior a hoy.
+    del fecha, permitir_pasada
 
 
 def _aplicar_sede(cliente, sede):
@@ -114,8 +116,9 @@ class RutaEstado:
 
 
 def actualizar_destino(destino, datos):
-    if destino.estado != Destino.Estado.NO_INICIADO:
-        raise ValidationError({"detail": "Solo se edita un destino que no ha iniciado."})
+    if destino.estado not in {Destino.Estado.NO_INICIADO, Destino.Estado.EN_PROCESO}:
+        raise ValidationError({"detail": "Solo se edita un destino pendiente o que está en proceso."})
+    antes_lat, antes_lng = destino.latitud, destino.longitud
     completo = {
         "codigo_externo": destino.codigo_externo,
         "fecha": destino.fecha,
@@ -147,7 +150,25 @@ def actualizar_destino(destino, datos):
         for campo, valor in completo.items():
             setattr(destino, campo, valor)
         destino.save()
+    if (destino.latitud, destino.longitud) != (antes_lat, antes_lng):
+        _recalcular_ruta_del_destino(destino)
     return destino
+
+
+def _recalcular_ruta_del_destino(destino):
+    asignacion = getattr(destino, "asignacion", None)
+    if asignacion is None:
+        return
+    from .rutas import recalcular_ruta
+
+    try:
+        recalcular_ruta(asignacion.ruta)
+    except Exception:
+        logger.exception(
+            "No se pudo recalcular la ruta %s después de mover el destino %s.",
+            asignacion.ruta_id,
+            destino.pk,
+        )
 
 
 def reprogramar_destino(destino, fecha):
