@@ -105,7 +105,9 @@ def _validar_auxiliares(auxiliares, conductor):
             raise ValidationError({"auxiliar_ids": ["El conductor no puede ir también como auxiliar."]})
 
 
-def _validar_fecha(fecha):
+def _validar_fecha(fecha, permitir_pasada=False):
+    if permitir_pasada:
+        return
     if fecha < timezone.localdate():
         raise ValidationError({"fecha": ["Solo se arman rutas para hoy o para los próximos días."]})
 
@@ -159,7 +161,7 @@ def recalcular_ruta(ruta):
 
 
 def proponer_ruta(*, cliente, fecha, base_origen, base_final, destinos):
-    _validar_fecha(fecha)
+    _validar_fecha(fecha, permitir_pasada=True)
     base_origen, base_final = _validar_bases(cliente, base_origen, base_final)
     destinos = _validar_destinos(cliente, fecha, destinos)
     ordenados = ordenar_por_cercania(base_origen, destinos)
@@ -190,8 +192,8 @@ def proponer_ruta(*, cliente, fecha, base_origen, base_final, destinos):
 
 
 @transaction.atomic
-def crear_ruta(*, cliente, fecha, conductor, vehiculo, auxiliares, base_origen, base_final, destinos, creado_por, optimizar=False):
-    _validar_fecha(fecha)
+def crear_ruta(*, cliente, fecha, conductor, vehiculo, auxiliares, base_origen, base_final, destinos, creado_por, optimizar=False, permitir_fecha_pasada=False):
+    _validar_fecha(fecha, permitir_pasada=permitir_fecha_pasada)
     if not cliente.activo:
         raise ValidationError({"cliente_id": ["El cliente está inactivo."]})
     if conductor.rol_nombre != Rol.Nombre.CONDUCTOR or not conductor.is_active:
@@ -235,7 +237,7 @@ def actualizar_ruta(ruta, datos):
     base_final = datos.get("base_final", ruta.base_final)
     destinos = datos.get("destinos")
     optimizar = datos.get("optimizar", False)
-    _validar_fecha(fecha)
+    _validar_fecha(fecha, permitir_pasada=True)
     if conductor.rol_nombre != Rol.Nombre.CONDUCTOR or not conductor.is_active:
         raise ValidationError({"conductor_id": ["El conductor debe ser un usuario conductor activo."]})
     if not vehiculo.activo:

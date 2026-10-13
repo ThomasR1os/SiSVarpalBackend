@@ -1,3 +1,4 @@
+from datetime import timedelta
 from io import BytesIO
 from unittest.mock import patch
 
@@ -179,6 +180,131 @@ class ReglasApiTests(TestCase):
         self.assertEqual(respuesta.data["creados"], 1)
         self.assertEqual(len(respuesta.data["rechazados"]), 1)
         self.assertIn("latitud", respuesta.data["rechazados"][0]["errores"][0])
+
+    def test_importe_masivo_acepta_fecha_anterior(self):
+        from openpyxl import Workbook
+
+        ayer = self.hoy - timedelta(days=1)
+        destino = Destino.objects.create(
+            cliente=self.cliente,
+            fecha=ayer,
+            codigo_externo="AYER-1",
+            tipo_servicio=Destino.TipoServicio.ENTREGA,
+            documento_receptor="12345678",
+            nombre_receptor="Ana",
+            apellido_receptor="Diaz",
+            telefono_receptor="999999999",
+            direccion="Calle Destino 10",
+            distrito="Miraflores",
+            latitud=-12.100000,
+            longitud=-77.040000,
+            motivo_servicio="Pedido",
+            creado_por=self.admin,
+        )
+        libro = Workbook()
+        hoja = libro.active
+        hoja.append(
+            [
+                "codigo_ruta",
+                "fecha",
+                "ruc",
+                "placa",
+                "documento_conductor",
+                "documentos_auxiliares",
+                "codigo_base_origen",
+                "codigo_base_final",
+                "codigo_externo",
+                "orden",
+            ]
+        )
+        hoja.append(
+            ["R-AYER", ayer.isoformat(), self.cliente.ruc, "ABC123", "87654321", "", "BASE-PRINCIPAL", "BASE-PRINCIPAL", "AYER-1", 1]
+        )
+        buffer = BytesIO()
+        libro.save(buffer)
+        archivo = SimpleUploadedFile(
+            "rutas.xlsx",
+            buffer.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.autenticar(self.admin)
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            respuesta = self.client.post("/api/rutas/importar/", {"archivo": archivo}, format="multipart")
+        self.assertEqual(respuesta.status_code, 200, respuesta.content)
+        self.assertEqual(respuesta.data["creados"], 1)
+        self.assertEqual(respuesta.data["rechazados"], [])
+        self.assertEqual(Ruta.objects.get(pk=respuesta.data["rutas"][0]).fecha, ayer)
+
+        suelto = Destino.objects.create(
+            cliente=self.cliente,
+            fecha=ayer,
+            codigo_externo="AYER-MANUAL",
+            tipo_servicio=Destino.TipoServicio.ENTREGA,
+            documento_receptor="12345678",
+            nombre_receptor="Ana",
+            apellido_receptor="Diaz",
+            telefono_receptor="999999999",
+            direccion="Calle Destino 11",
+            distrito="Miraflores",
+            latitud=-12.110000,
+            longitud=-77.030000,
+            motivo_servicio="Pedido",
+            creado_por=self.admin,
+        )
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            manual = self.client.post(
+                "/api/rutas/",
+                {
+                    "cliente_id": self.cliente.id,
+                    "fecha": ayer.isoformat(),
+                    "conductor_id": self.conductor.id,
+                    "vehiculo_id": self.vehiculo.id,
+                    "destino_ids": [suelto.id],
+                },
+                format="json",
+            )
+        self.assertEqual(manual.status_code, 201, manual.content)
+        self.assertEqual(str(manual.data["fecha"])[:10], ayer.isoformat())
+
+        destinos = Workbook()
+        hoja_destinos = destinos.active
+        hoja_destinos.append(
+            [
+                "codigo_externo",
+                "fecha",
+                "tipo_servicio",
+                "motivo_servicio",
+                "documento_receptor",
+                "nombre_receptor",
+                "apellido_receptor",
+                "telefono_receptor",
+                "direccion",
+                "distrito",
+                "referencia",
+                "latitud",
+                "longitud",
+                "observaciones",
+                "codigo_sede",
+            ]
+        )
+        hoja_destinos.append(
+            ["AYER-2", ayer.isoformat(), "ENTREGA", "Pedido", "123", "Ana", "Diaz", "999", "Av 1", "Miraflores", "", -12.11, -77.03, "", ""]
+        )
+        buffer_destinos = BytesIO()
+        destinos.save(buffer_destinos)
+        archivo_destinos = SimpleUploadedFile(
+            "destinos.xlsx",
+            buffer_destinos.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        importados = self.client.post(
+            "/api/destinos/importar/",
+            {"cliente_id": self.cliente.id, "archivo": archivo_destinos},
+            format="multipart",
+        )
+        self.assertEqual(importados.status_code, 200, importados.content)
+        self.assertEqual(importados.data["creados"], 1)
+        self.assertEqual(Destino.objects.get(codigo_externo="AYER-2").fecha, ayer)
 
     def _ruta_en_proceso(self):
         self.autenticar(self.admin)

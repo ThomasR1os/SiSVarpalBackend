@@ -179,7 +179,9 @@ def importar_destinos(*, cliente, archivo, usuario):
                     raise ValidationError({"codigo_sede": ["No existe una sede activa con ese código."]})
                 payload["sede"] = sede
             with transaction.atomic():
-                destino = crear_destino(cliente=cliente, datos=payload, usuario=usuario)
+                destino = crear_destino(
+                    cliente=cliente, datos=payload, usuario=usuario, permitir_fecha_pasada=True
+                )
             creados.append(destino.id)
         except (ValidationError, ValueError) as exc:
             rechazados.append({"fila": numero, "errores": _errores_de(exc)})
@@ -297,5 +299,6 @@ def _crear_grupo(codigo_ruta, entradas, usuario):
         destinos=destinos,
         creado_por=usuario,
         optimizar=False,
+        permitir_fecha_pasada=True,
     )
     return ruta

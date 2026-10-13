@@ -244,6 +244,7 @@ class RutaWriteSerializer(serializers.Serializer):
             destinos=validated_data["destinos"],
             creado_por=self.context["request"].user,
             optimizar=validated_data.get("optimizar", False),
+            permitir_fecha_pasada=True,
         )
 
     def update(self, instance, validated_data):

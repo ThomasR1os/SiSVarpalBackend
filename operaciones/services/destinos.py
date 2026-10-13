@@ -18,7 +18,9 @@ CAMPOS_RECEPTOR = (
 )
 
 
-def _fecha_permitida(fecha):
+def _fecha_permitida(fecha, permitir_pasada=False):
+    if permitir_pasada:
+        return
     if fecha < timezone.localdate():
         raise ValidationError({"fecha": ["La fecha no puede ser anterior a hoy."]})
 
@@ -51,12 +53,12 @@ def _validar_punto_servicio(datos):
     return datos
 
 
-def preparar_destino(cliente, datos):
+def preparar_destino(cliente, datos, permitir_fecha_pasada=False):
     if not str(datos.get("codigo_externo") or "").strip():
         raise ValidationError({"codigo_externo": ["El código es obligatorio."]})
     if not str(datos.get("motivo_servicio") or "").strip():
         raise ValidationError({"motivo_servicio": ["Indique por qué se hace el servicio."]})
-    _fecha_permitida(datos["fecha"])
+    _fecha_permitida(datos["fecha"], permitir_pasada=permitir_fecha_pasada)
     tipo = datos["tipo_servicio"]
     if tipo not in Destino.TipoServicio.values:
         raise ValidationError({"tipo_servicio": ["Tipo de servicio no reconocido."]})
@@ -77,8 +79,8 @@ def preparar_destino(cliente, datos):
     return datos
 
 
-def crear_destino(*, cliente, datos, usuario):
-    datos = preparar_destino(cliente, datos)
+def crear_destino(*, cliente, datos, usuario, permitir_fecha_pasada=False):
+    datos = preparar_destino(cliente, datos, permitir_fecha_pasada=permitir_fecha_pasada)
     if Destino.objects.filter(cliente=cliente, codigo_externo=datos["codigo_externo"]).exists():
         raise ValidationError({"codigo_externo": ["Ya existe un destino con ese código para el cliente."]})
     return Destino.objects.create(
