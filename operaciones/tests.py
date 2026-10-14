@@ -330,6 +330,39 @@ class ReglasApiTests(TestCase):
         self.assertEqual(iniciada.data["estado"], Ruta.Estado.EN_PROCESO)
         return ruta_id
 
+    def test_ruta_en_proceso_permite_quitar_parada_pendiente(self):
+        self.autenticar(self.admin)
+        creada = self.client.post(
+            "/api/rutas/",
+            {
+                "cliente_id": self.cliente.id,
+                "fecha": self.hoy.isoformat(),
+                "conductor_id": self.conductor.id,
+                "vehiculo_id": self.vehiculo.id,
+                "destino_ids": [self.destino.id, self.destino_lejos.id],
+            },
+            format="json",
+        )
+        self.assertEqual(creada.status_code, 201, creada.content)
+        ruta_id = creada.data["id"]
+        self.client.post(f"/api/rutas/{ruta_id}/confirmar/")
+        self.autenticar(self.conductor)
+        iniciada = self.client.post(f"/api/rutas/{ruta_id}/iniciar/")
+        self.assertEqual(iniciada.status_code, 200, iniciada.content)
+        self.autenticar(self.admin)
+        quitada = self.client.patch(
+            f"/api/rutas/{ruta_id}/",
+            {"destino_ids": [self.destino.id]},
+            format="json",
+        )
+        self.assertEqual(quitada.status_code, 200, quitada.content)
+        self.assertEqual([parada["destino_id"] for parada in quitada.data["paradas"]], [self.destino.id])
+        self.destino_lejos.refresh_from_db()
+        self.assertEqual(self.destino_lejos.estado, Destino.Estado.NO_INICIADO)
+        self.assertFalse(hasattr(self.destino_lejos, "asignacion") and self.destino_lejos.asignacion)
+        self.destino.refresh_from_db()
+        self.assertEqual(self.destino.estado, Destino.Estado.EN_PROCESO)
+
     def test_cierre_exige_foto_y_motivo_si_falla(self):
         ruta_id = self._ruta_en_proceso()
         self.autenticar(self.conductor)
@@ -583,6 +616,58 @@ class ReglasApiTests(TestCase):
             creada = self._crear_ruta([afuera.id])
         self.assertFalse(creada.data["dentro_de_lima"])
         self.assertGreater(len(creada.data["geometria_empresa"]["coordinates"]), 3)
+
+    def test_conductor_agrega_solo_traslado_en_ruta_activa(self):
+        sede = Punto.objects.create(
+            cliente=self.cliente,
+            codigo="SEDE-NORTE",
+            nombre="Sede norte",
+            direccion="Av. Norte 10",
+            distrito="Independencia",
+            latitud=-11.99,
+            longitud=-77.05,
+            es_sede=True,
+        )
+        ruta_id = self._ruta_en_proceso()
+        self.autenticar(self.conductor)
+        respuesta = self.client.post(
+            f"/api/rutas/{ruta_id}/traslado/",
+            {"sede_id": sede.id, "motivo_servicio": "Llevar mercadería a la sede", "tipo_servicio": "ENTREGA"},
+            format="json",
+        )
+        self.assertEqual(respuesta.status_code, 201, respuesta.content)
+        traslado = next(parada for parada in respuesta.data["paradas"] if parada["tipo_servicio"] == "TRASLADO")
+        self.assertEqual(traslado["estado"], Destino.Estado.EN_PROCESO)
+        self.assertEqual(traslado["direccion"], sede.direccion)
+        base = Punto.objects.get(cliente=self.cliente, es_principal=True)
+        a_base = self.client.post(
+            f"/api/rutas/{ruta_id}/traslado/",
+            {"sede_id": base.id, "motivo_servicio": "Volver a la base original"},
+            format="json",
+        )
+        self.assertEqual(a_base.status_code, 201, a_base.content)
+        self.assertTrue(any(parada["direccion"] == base.direccion for parada in a_base.data["paradas"]))
+        self.autenticar(self.admin)
+        prohibido = self.client.post(
+            f"/api/rutas/{ruta_id}/traslado/",
+            {"sede_id": sede.id, "motivo_servicio": "Otro"},
+            format="json",
+        )
+        self.assertEqual(prohibido.status_code, 403, prohibido.content)
+
+    def test_el_mapa_sale_de_varpal_si_todos_son_recojo(self):
+        self.destino.tipo_servicio = Destino.TipoServicio.RECOJO
+        self.destino.save(update_fields=["tipo_servicio"])
+        creada = self._crear_ruta([self.destino.id])
+        varpal = Punto.objects.get(cliente__isnull=True, es_principal=True)
+        self.assertEqual(creada.data["base_origen"]["id"], varpal.id)
+
+    def test_el_mapa_sale_del_cliente_si_hay_una_entrega(self):
+        self.destino.tipo_servicio = Destino.TipoServicio.RECOJO
+        self.destino.save(update_fields=["tipo_servicio"])
+        creada = self._crear_ruta([self.destino.id, self.destino_lejos.id])
+        cliente = Punto.objects.get(cliente=self.cliente, es_principal=True)
+        self.assertEqual(creada.data["base_origen"]["id"], cliente.id)
 
     def _crear_ruta(self, destino_ids):
         self.autenticar(self.admin)

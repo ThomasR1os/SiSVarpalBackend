@@ -38,3 +38,23 @@ def subir_foto(archivo, destino_id):
     if not url:
         raise ValidationError({"fotos": ["No se pudo subir la foto."]})
     return url
+
+
+def borrar_foto(url):
+    if not url:
+        return
+    try:
+        _configurar()
+        ruta = urlparse(url).path
+        marca = "/upload/"
+        if marca not in ruta:
+            return
+        resto = ruta.split(marca, 1)[1].lstrip("/")
+        if "/" in resto:
+            primero, siguiente = resto.split("/", 1)
+            if primero.startswith("v") and primero[1:].isdigit():
+                resto = siguiente
+        public_id = unquote(resto.rsplit(".", 1)[0])
+        cloudinary.uploader.destroy(public_id, resource_type="image")
+    except Exception:
+        logger.exception("No se pudo borrar la evidencia %s", url)

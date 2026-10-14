@@ -8,7 +8,7 @@ from usuarios.models import Rol, Usuario
 
 from config.coordenadas import coordenada_texto
 
-from .destinos import base_final_empresa, base_origen_cliente, dentro_de_lima_puntos
+from .destinos import base_final_empresa, base_origen_cliente, crear_destino, dentro_de_lima_puntos
 from .geo import construir_recorrido, estimar_horas, ordenar_por_cercania
 
 
@@ -59,10 +59,32 @@ def puede_operar_parada(usuario, destino):
     return False
 
 
-def _validar_bases(cliente, base_origen, base_final):
-    if base_origen is None:
+def _solo_recojos(destinos):
+    return bool(destinos) and all(destino.tipo_servicio == Destino.TipoServicio.RECOJO for destino in destinos)
+
+
+def base_inicial_para(cliente, destinos, origen_actual=None):
+    # Todos recojo: el camión sale de Varpal. Con una entrega, sale de la base del cliente.
+    if _solo_recojos(destinos):
+        return base_final_empresa()
+    if (
+        origen_actual is not None
+        and origen_actual.cliente_id == cliente.id
+        and origen_actual.es_base_origen
+        and origen_actual.activo
+    ):
+        return origen_actual
+    return base_origen_cliente(cliente)
+
+
+def _validar_bases(cliente, base_origen, base_final, destinos=None):
+    if destinos is not None:
+        base_origen = base_inicial_para(cliente, destinos, base_origen)
+    elif base_origen is None:
         base_origen = base_origen_cliente(cliente)
-    if base_origen.cliente_id != cliente.id or not base_origen.es_base_origen or not base_origen.activo:
+    es_varpal = base_origen.cliente_id is None and base_origen.es_principal and base_origen.activo
+    es_cliente = base_origen.cliente_id == cliente.id and base_origen.es_base_origen and base_origen.activo
+    if not es_varpal and not es_cliente:
         raise ValidationError({"base_origen_id": ["La base de origen debe ser una base activa del cliente."]})
     if base_final is None:
         base_final = base_final_empresa()
@@ -113,14 +135,17 @@ def _validar_fecha(fecha, permitir_pasada=False):
 
 
 def _reemplazar_paradas(ruta, destinos):
-    actuales = {parada.destino_id: parada for parada in ruta.paradas.all()}
+    actuales = {parada.destino_id: parada for parada in RutaDestino.objects.filter(ruta=ruta)}
     for destino_id, parada in list(actuales.items()):
         if destino_id not in {destino.id for destino in destinos}:
             parada.delete()
             actuales.pop(destino_id)
-    for indice, parada in enumerate(ruta.paradas.all(), start=1):
+    for indice, parada in enumerate(RutaDestino.objects.filter(ruta=ruta), start=1):
         parada.orden = 10000 + indice
         parada.save(update_fields=["orden"])
+    cache = getattr(ruta, "_prefetched_objects_cache", None)
+    if cache is not None:
+        cache.pop("paradas", None)
     for orden, destino in enumerate(destinos, start=1):
         parada = actuales.get(destino.id)
         if parada is None:
@@ -131,10 +156,12 @@ def _reemplazar_paradas(ruta, destinos):
 
 
 def recalcular_ruta(ruta):
-    ruta = Ruta.objects.select_related("base_origen", "base_final").get(pk=ruta.pk)
+    ruta = Ruta.objects.select_related("base_origen", "base_final", "cliente").get(pk=ruta.pk)
     destinos = [parada.destino for parada in ruta.paradas.select_related("destino").order_by("orden")]
-    recorrido = construir_recorrido(ruta.base_origen, destinos, ruta.base_final)
-    puntos = [(ruta.base_origen.latitud, ruta.base_origen.longitud)]
+    origen = base_inicial_para(ruta.cliente, destinos, ruta.base_origen)
+    ruta.base_origen = origen
+    recorrido = construir_recorrido(origen, destinos, ruta.base_final)
+    puntos = [(origen.latitud, origen.longitud)]
     puntos.extend((destino.latitud, destino.longitud) for destino in destinos)
     puntos.append((ruta.base_final.latitud, ruta.base_final.longitud))
     ruta.geometria_cliente = recorrido["geometria_cliente"]
@@ -153,6 +180,7 @@ def recalcular_ruta(ruta):
             "distancia_cliente_metros",
             "duracion_cliente_segundos",
             "dentro_de_lima",
+            "base_origen",
             "actualizado_en",
         ]
     )
@@ -160,10 +188,18 @@ def recalcular_ruta(ruta):
     return ruta
 
 
+def sincronizar_origen(ruta):
+    destinos = [parada.destino for parada in ruta.paradas.all()]
+    origen = base_inicial_para(ruta.cliente, destinos, ruta.base_origen)
+    if ruta.base_origen_id == origen.id:
+        return ruta
+    return recalcular_ruta(ruta)
+
+
 def proponer_ruta(*, cliente, fecha, base_origen, base_final, destinos):
     _validar_fecha(fecha, permitir_pasada=True)
-    base_origen, base_final = _validar_bases(cliente, base_origen, base_final)
     destinos = _validar_destinos(cliente, fecha, destinos)
+    base_origen, base_final = _validar_bases(cliente, base_origen, base_final, destinos)
     ordenados = ordenar_por_cercania(base_origen, destinos)
     recorrido = construir_recorrido(base_origen, ordenados, base_final)
     puntos = [(base_origen.latitud, base_origen.longitud)]
@@ -201,8 +237,8 @@ def crear_ruta(*, cliente, fecha, conductor, vehiculo, auxiliares, base_origen, 
     if not vehiculo.activo:
         raise ValidationError({"vehiculo_id": ["El vehículo está inactivo."]})
     _validar_auxiliares(auxiliares, conductor)
-    base_origen, base_final = _validar_bases(cliente, base_origen, base_final)
     destinos = _validar_destinos(cliente, fecha, destinos)
+    base_origen, base_final = _validar_bases(cliente, base_origen, base_final, destinos)
     if optimizar:
         destinos = ordenar_por_cercania(base_origen, destinos)
     ruta = Ruta.objects.create(
@@ -224,8 +260,72 @@ def crear_ruta(*, cliente, fecha, conductor, vehiculo, auxiliares, base_origen, 
     return recalcular_ruta(ruta)
 
 
+def _ajustar_paradas_en_proceso(ruta, destinos):
+    if not destinos:
+        raise ValidationError({"destino_ids": ["La ruta necesita al menos un destino."]})
+    if len({destino.id for destino in destinos}) != len(destinos):
+        raise ValidationError({"destino_ids": ["Hay destinos repetidos."]})
+    actuales = list(ruta.paradas.select_related("destino"))
+    ids_actuales = {parada.destino_id for parada in actuales}
+    ids_nuevos = {destino.id for destino in destinos}
+    for parada in actuales:
+        if parada.destino_id in ids_nuevos:
+            continue
+        if parada.destino.estado in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
+            raise ValidationError({"destino_ids": ["No se puede quitar un destino exitoso o fallido."]})
+    agregados = [destino for destino in destinos if destino.id not in ids_actuales]
+    if RutaDestino.objects.filter(destino__in=agregados).exclude(ruta=ruta).exists():
+        raise ValidationError({"destino_ids": ["Uno o más destinos ya pertenecen a otra ruta."]})
+    for destino in agregados:
+        if destino.cliente_id != ruta.cliente_id or destino.fecha != ruta.fecha:
+            raise ValidationError(
+                {"destino_ids": ["Los destinos deben ser del mismo cliente y de la misma fecha de la ruta."]}
+            )
+        if destino.estado != Destino.Estado.NO_INICIADO:
+            raise ValidationError({"destino_ids": ["Solo se agregan destinos que no han iniciado."]})
+    quitados = [parada.destino_id for parada in actuales if parada.destino_id not in ids_nuevos]
+    _reemplazar_paradas(ruta, destinos)
+    if quitados:
+        Destino.objects.filter(pk__in=quitados, estado=Destino.Estado.EN_PROCESO).update(
+            estado=Destino.Estado.NO_INICIADO
+        )
+    if agregados:
+        Destino.objects.filter(pk__in=[destino.id for destino in agregados]).update(
+            estado=Destino.Estado.EN_PROCESO
+        )
+    return recalcular_ruta(ruta)
+
+
+@transaction.atomic
+def agregar_traslado(ruta, usuario, sede, codigo_externo, motivo_servicio, observaciones=""):
+    if usuario.rol_nombre != Rol.Nombre.CONDUCTOR or ruta.conductor_id != usuario.id:
+        raise PermissionDenied("Solo el conductor asignado puede agregar un traslado.")
+    if ruta.estado != Ruta.Estado.EN_PROCESO:
+        raise ValidationError({"detail": "Solo se agrega un traslado a una ruta en proceso."})
+    codigo = str(codigo_externo or "").strip()
+    if not codigo:
+        codigo = f"TRS-{ruta.id}-{Destino.objects.filter(cliente=ruta.cliente).count() + 1}"
+    destino = crear_destino(
+        cliente=ruta.cliente,
+        datos={
+            "fecha": ruta.fecha,
+            "codigo_externo": codigo,
+            "tipo_servicio": Destino.TipoServicio.TRASLADO,
+            "sede": sede,
+            "motivo_servicio": motivo_servicio,
+            "observaciones": observaciones or "",
+        },
+        usuario=usuario,
+        permitir_fecha_pasada=True,
+    )
+    actuales = [parada.destino for parada in ruta.paradas.select_related("destino").order_by("orden")]
+    return _ajustar_paradas_en_proceso(ruta, actuales + [destino])
+
+
 @transaction.atomic
 def actualizar_ruta(ruta, datos):
+    if ruta.estado == Ruta.Estado.EN_PROCESO and set(datos) == {"destinos"}:
+        return _ajustar_paradas_en_proceso(ruta, datos["destinos"])
     if ruta.estado not in ESTADOS_EDITABLES:
         raise ValidationError({"detail": "Solo se edita una ruta que no ha iniciado."})
     cliente = ruta.cliente
@@ -248,11 +348,11 @@ def actualizar_ruta(ruta, datos):
     final_anterior = ruta.base_final_id
     orden_anterior = list(ruta.paradas.order_by("orden").values_list("destino_id", flat=True))
     pidio_destinos = "destinos" in datos
-    base_origen, base_final = _validar_bases(cliente, base_origen, base_final)
     if destinos is None:
         destinos = [parada.destino for parada in ruta.paradas.select_related("destino").order_by("orden")]
     else:
         destinos = _validar_destinos(cliente, fecha, destinos, ruta=ruta)
+    base_origen, base_final = _validar_bases(cliente, base_origen, base_final, destinos)
     if optimizar:
         destinos = ordenar_por_cercania(base_origen, destinos)
     if any(destino.fecha != fecha for destino in destinos):

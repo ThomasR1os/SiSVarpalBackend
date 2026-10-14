@@ -338,6 +338,27 @@ class HoraLimaField(serializers.TimeField):
         return super().to_internal_value(data)
 
 
+class TrasladoConductorSerializer(serializers.Serializer):
+    sede_id = serializers.PrimaryKeyRelatedField(
+        source="sede",
+        queryset=Punto.objects.filter(activo=True, cliente__isnull=False).exclude(es_sede=False, es_principal=False),
+    )
+    codigo_externo = serializers.CharField(required=False, allow_blank=True)
+    motivo_servicio = serializers.CharField()
+    observaciones = serializers.CharField(required=False, allow_blank=True)
+
+
+class CorregirCierreSerializer(serializers.Serializer):
+    resultado = serializers.ChoiceField(choices=[Destino.Estado.EXITOSO, Destino.Estado.FALLIDO])
+    motivo_id = serializers.PrimaryKeyRelatedField(
+        source="motivo",
+        queryset=Motivo.objects.filter(activo=True),
+        required=False,
+        allow_null=True,
+    )
+    observacion = serializers.CharField(required=False, allow_blank=True)
+
+
 class CierreSerializer(serializers.Serializer):
     resultado = serializers.ChoiceField(choices=[Destino.Estado.EXITOSO, Destino.Estado.FALLIDO])
     motivo_id = serializers.PrimaryKeyRelatedField(

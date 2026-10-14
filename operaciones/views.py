@@ -14,6 +14,7 @@ from operaciones.models import Destino, Notificacion, Ruta
 from operaciones.plantillas_excel import plantilla_destinos, plantilla_rutas
 from operaciones.serializers import (
     CierreSerializer,
+    CorregirCierreSerializer,
     DestinoSerializer,
     DestinoWriteSerializer,
     EvidenciaSerializer,
@@ -24,11 +25,13 @@ from operaciones.serializers import (
     ReprogramarSerializer,
     RutaSerializer,
     RutaWriteSerializer,
+    TrasladoConductorSerializer,
 )
-from operaciones.services.destinos import cerrar_destino, reprogramar_destino
+from operaciones.services.destinos import cerrar_destino, corregir_cierre, reprogramar_destino
 from operaciones.services.importacion import importar_destinos, importar_rutas
 from operaciones.services.rutas import (
     aplicar_orden,
+    agregar_traslado,
     cancelar_ruta,
     confirmar_llegada,
     confirmar_ruta,
@@ -40,6 +43,7 @@ from operaciones.services.rutas import (
     registrar_posicion,
     rutas_visibles,
     seguimiento_activo_para,
+    sincronizar_origen,
 )
 from usuarios.models import Rol
 from usuarios.permissions import EsAdministrador
@@ -127,6 +131,24 @@ class DestinoViewSet(viewsets.ModelViewSet):
         )
         return Response(DestinoSerializer(destino).data)
 
+    @action(detail=True, methods=["post"], parser_classes=[MultiPartParser, FormParser])
+    def corregir(self, request, pk=None):
+        if request.user.rol_nombre != Rol.Nombre.ADMINISTRADOR:
+            raise PermissionDenied("Solo un administrador puede corregir el cierre.")
+        destino = self.get_object()
+        serializer = CorregirCierreSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        destino = corregir_cierre(
+            destino=destino,
+            resultado=serializer.validated_data["resultado"],
+            motivo=serializer.validated_data.get("motivo"),
+            observacion=serializer.validated_data.get("observacion", ""),
+            fotos=request.FILES.getlist("fotos"),
+            eliminar_ids=request.data.getlist("eliminar"),
+            usuario=request.user,
+        )
+        return Response(DestinoSerializer(destino).data)
+
     @action(detail=True, methods=["get"])
     def evidencias(self, request, pk=None):
         destino = self.get_object()
@@ -194,6 +216,10 @@ class RutaViewSet(viewsets.ModelViewSet):
         ruta = serializer.save()
         return Response(self._leer(ruta), status=201)
 
+    def retrieve(self, request, *args, **kwargs):
+        ruta = sincronizar_origen(self.get_object())
+        return Response(self._leer(ruta))
+
     def partial_update(self, request, *args, **kwargs):
         ruta = self.get_object()
         serializer = self.get_serializer(ruta, data=request.data, partial=True)
@@ -219,6 +245,21 @@ class RutaViewSet(viewsets.ModelViewSet):
                 destinos=datos["destinos"],
             )
         )
+
+    @action(detail=True, methods=["post"])
+    def traslado(self, request, pk=None):
+        serializer = TrasladoConductorSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        datos = serializer.validated_data
+        ruta = agregar_traslado(
+            self.get_object(),
+            request.user,
+            sede=datos["sede"],
+            codigo_externo=datos.get("codigo_externo", ""),
+            motivo_servicio=datos["motivo_servicio"],
+            observaciones=datos.get("observaciones", ""),
+        )
+        return Response(self._leer(ruta), status=201)
 
     @action(detail=True, methods=["post"])
     def confirmar(self, request, pk=None):
@@ -309,6 +350,7 @@ class MapaRutasView(APIView):
 
 
 def armar_seguimiento(ruta, usuario):
+    ruta = sincronizar_origen(ruta)
     activo = seguimiento_activo_para(usuario, ruta)
     es_cliente = usuario.rol_nombre == Rol.Nombre.CLIENTE
     data = {

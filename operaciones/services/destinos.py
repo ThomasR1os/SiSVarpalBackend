@@ -8,7 +8,7 @@ from catalogos.models import Punto
 from config.coordenadas import validar_coordenadas
 from operaciones.models import Destino
 
-from .fotos import subir_foto
+from .fotos import borrar_foto, subir_foto
 from .geo import poligono_activo, punto_dentro
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def _fecha_permitida(fecha, permitir_pasada=False):
 def _aplicar_sede(cliente, sede):
     if sede is None:
         raise ValidationError({"sede_id": ["Un traslado debe indicar la sede."]})
-    if sede.cliente_id != cliente.id or not sede.es_sede or not sede.activo:
+    if sede.cliente_id != cliente.id or not sede.activo or not (sede.es_sede or sede.es_principal):
         raise ValidationError({"sede_id": ["La sede no pertenece al cliente o no está activa."]})
     return {
         "sede": sede,
@@ -119,6 +119,7 @@ def actualizar_destino(destino, datos):
     if destino.estado not in {Destino.Estado.NO_INICIADO, Destino.Estado.EN_PROCESO}:
         raise ValidationError({"detail": "Solo se edita un destino pendiente o que está en proceso."})
     antes_lat, antes_lng = destino.latitud, destino.longitud
+    antes_tipo = destino.tipo_servicio
     completo = {
         "codigo_externo": destino.codigo_externo,
         "fecha": destino.fecha,
@@ -150,7 +151,7 @@ def actualizar_destino(destino, datos):
         for campo, valor in completo.items():
             setattr(destino, campo, valor)
         destino.save()
-    if (destino.latitud, destino.longitud) != (antes_lat, antes_lng):
+    if (destino.latitud, destino.longitud) != (antes_lat, antes_lng) or destino.tipo_servicio != antes_tipo:
         _recalcular_ruta_del_destino(destino)
     return destino
 
@@ -182,14 +183,16 @@ def reprogramar_destino(destino, fecha):
     return destino
 
 
-def validar_imagenes(archivos):
+def validar_imagenes(archivos, obligatorias=True):
     from io import BytesIO
 
     from django.conf import settings
     from PIL import Image, UnidentifiedImageError
 
     if not archivos:
-        raise ValidationError({"fotos": ["Se requiere al menos una foto."]})
+        if obligatorias:
+            raise ValidationError({"fotos": ["Se requiere al menos una foto."]})
+        return
     if len(archivos) > settings.FOTOS_MAXIMAS_POR_CIERRE:
         raise ValidationError({"fotos": [f"Puede adjuntar hasta {settings.FOTOS_MAXIMAS_POR_CIERRE} fotos."]})
     for archivo in archivos:
@@ -258,6 +261,50 @@ def cerrar_destino(
                 "hora_fin_descarga",
             ]
         )
+    return destino
+
+
+def corregir_cierre(*, destino, resultado, motivo, observacion, fotos, eliminar_ids, usuario):
+    from django.conf import settings
+
+    from operaciones.models import Evidencia
+
+    if destino.estado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
+        raise ValidationError({"detail": "Solo se corrige un destino que ya fue cerrado."})
+    if resultado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
+        raise ValidationError({"resultado": ["El resultado debe ser EXITOSO o FALLIDO."]})
+    if resultado == Destino.Estado.FALLIDO:
+        if motivo is None or not motivo.activo:
+            raise ValidationError({"motivo_id": ["Seleccione un motivo activo."]})
+    else:
+        motivo = None
+    validar_imagenes(fotos, obligatorias=False)
+    actuales = list(destino.evidencias.all())
+    ids_actuales = {evidencia.id for evidencia in actuales}
+    try:
+        quitar = {int(valor) for valor in eliminar_ids}
+    except (TypeError, ValueError):
+        raise ValidationError({"eliminar": ["Identificador de foto inválido."]}) from None
+    ajenos = quitar - ids_actuales
+    if ajenos:
+        raise ValidationError({"eliminar": ["Hay fotos que no pertenecen a este destino."]})
+    quedan = len(actuales) - len(quitar) + len(fotos)
+    if quedan < 1:
+        raise ValidationError({"fotos": ["Debe quedar al menos una evidencia."]})
+    if quedan > settings.FOTOS_MAXIMAS_POR_CIERRE:
+        raise ValidationError({"fotos": [f"Puede dejar hasta {settings.FOTOS_MAXIMAS_POR_CIERRE} fotos."]})
+    a_borrar = [evidencia.archivo for evidencia in actuales if evidencia.id in quitar]
+    with transaction.atomic():
+        destino.estado = resultado
+        destino.motivo = motivo
+        destino.observacion_cierre = observacion or ""
+        destino.save(update_fields=["estado", "motivo", "observacion_cierre", "actualizado_en"])
+        if quitar:
+            Evidencia.objects.filter(destino=destino, id__in=quitar).delete()
+        for foto in fotos:
+            Evidencia.objects.create(destino=destino, subido_por=usuario, archivo=subir_foto(foto, destino.id))
+    for url in a_borrar:
+        borrar_foto(url)
     return destino
 
 
