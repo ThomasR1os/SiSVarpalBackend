@@ -19,6 +19,7 @@ class Destino(models.Model):
     class Estado(models.TextChoices):
         NO_INICIADO = "NO_INICIADO", "No iniciado"
         EN_PROCESO = "EN_PROCESO", "En proceso"
+        PENDIENTE = "PENDIENTE", "Pendiente"
         EXITOSO = "EXITOSO", "Exitoso"
         FALLIDO = "FALLIDO", "Fallido"
 

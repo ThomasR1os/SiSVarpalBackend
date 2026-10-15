@@ -220,8 +220,8 @@ def cerrar_destino(
 ):
     from operaciones.models import Evidencia
 
-    if destino.estado != Destino.Estado.EN_PROCESO:
-        raise ValidationError({"detail": "Solo se cierra un destino que está en proceso."})
+    if destino.estado not in {Destino.Estado.EN_PROCESO, Destino.Estado.PENDIENTE}:
+        raise ValidationError({"detail": "Solo se cierra un destino en proceso o pendiente de evidencias."})
     if resultado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
         raise ValidationError({"resultado": ["El resultado debe ser EXITOSO o FALLIDO."]})
     if hora_fin_descarga < hora_inicio_descarga:
@@ -269,10 +269,10 @@ def corregir_cierre(*, destino, resultado, motivo, observacion, fotos, eliminar_
 
     from operaciones.models import Evidencia
 
-    if destino.estado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
-        raise ValidationError({"detail": "Solo se corrige un destino que ya fue cerrado."})
-    if resultado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
-        raise ValidationError({"resultado": ["El resultado debe ser EXITOSO o FALLIDO."]})
+    if destino.estado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO, Destino.Estado.PENDIENTE}:
+        raise ValidationError({"detail": "Solo se corrige un destino cerrado o pendiente de evidencias."})
+    if resultado not in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO, Destino.Estado.PENDIENTE}:
+        raise ValidationError({"resultado": ["El resultado debe ser EXITOSO, FALLIDO o PENDIENTE."]})
     if resultado == Destino.Estado.FALLIDO:
         if motivo is None or not motivo.activo:
             raise ValidationError({"motivo_id": ["Seleccione un motivo activo."]})
@@ -289,7 +289,7 @@ def corregir_cierre(*, destino, resultado, motivo, observacion, fotos, eliminar_
     if ajenos:
         raise ValidationError({"eliminar": ["Hay fotos que no pertenecen a este destino."]})
     quedan = len(actuales) - len(quitar) + len(fotos)
-    if quedan < 1:
+    if resultado != Destino.Estado.PENDIENTE and quedan < 1:
         raise ValidationError({"fotos": ["Debe quedar al menos una evidencia."]})
     if quedan > settings.FOTOS_MAXIMAS_POR_CIERRE:
         raise ValidationError({"fotos": [f"Puede dejar hasta {settings.FOTOS_MAXIMAS_POR_CIERRE} fotos."]})

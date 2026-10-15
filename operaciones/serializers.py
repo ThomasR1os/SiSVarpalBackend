@@ -349,7 +349,9 @@ class TrasladoConductorSerializer(serializers.Serializer):
 
 
 class CorregirCierreSerializer(serializers.Serializer):
-    resultado = serializers.ChoiceField(choices=[Destino.Estado.EXITOSO, Destino.Estado.FALLIDO])
+    resultado = serializers.ChoiceField(
+        choices=[Destino.Estado.EXITOSO, Destino.Estado.FALLIDO, Destino.Estado.PENDIENTE]
+    )
     motivo_id = serializers.PrimaryKeyRelatedField(
         source="motivo",
         queryset=Motivo.objects.filter(activo=True),

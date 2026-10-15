@@ -363,6 +363,48 @@ class ReglasApiTests(TestCase):
         self.destino.refresh_from_db()
         self.assertEqual(self.destino.estado, Destino.Estado.EN_PROCESO)
 
+    def test_ruta_en_proceso_permite_quitar_destino_exitoso(self):
+        self.autenticar(self.admin)
+        creada = self.client.post(
+            "/api/rutas/",
+            {
+                "cliente_id": self.cliente.id,
+                "fecha": self.hoy.isoformat(),
+                "conductor_id": self.conductor.id,
+                "vehiculo_id": self.vehiculo.id,
+                "destino_ids": [self.destino.id, self.destino_lejos.id],
+            },
+            format="json",
+        )
+        self.assertEqual(creada.status_code, 201, creada.content)
+        ruta_id = creada.data["id"]
+        self.client.post(f"/api/rutas/{ruta_id}/confirmar/")
+        self.autenticar(self.conductor)
+        self.client.post(f"/api/rutas/{ruta_id}/iniciar/")
+        cerrado = self.client.post(
+            f"/api/destinos/{self.destino.id}/cerrar/",
+            {
+                "resultado": "EXITOSO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "10:00",
+                "hora_fin_descarga": "10:20",
+            },
+            format="multipart",
+        )
+        self.assertEqual(cerrado.status_code, 200, cerrado.content)
+        self.autenticar(self.admin)
+        quitada = self.client.patch(
+            f"/api/rutas/{ruta_id}/",
+            {"destino_ids": [self.destino_lejos.id]},
+            format="json",
+        )
+        self.assertEqual(quitada.status_code, 200, quitada.content)
+        self.assertEqual([parada["destino_id"] for parada in quitada.data["paradas"]], [self.destino_lejos.id])
+        self.destino.refresh_from_db()
+        self.assertEqual(self.destino.estado, Destino.Estado.NO_INICIADO)
+        self.assertIsNone(self.destino.motivo_id)
+        self.assertFalse(hasattr(self.destino, "asignacion") and self.destino.asignacion)
+
     def test_ruta_en_proceso_permite_cambiar_auxiliares(self):
         auxiliar = Usuario.objects.create(
             username="auxiliar",
@@ -431,6 +473,56 @@ class ReglasApiTests(TestCase):
         )
         self.assertEqual(fin_antes.status_code, 400, fin_antes.content)
         self.assertIn("hora_fin_descarga", fin_antes.data["errores"])
+
+    def test_corregir_puede_dejar_la_evidencia_pendiente(self):
+        ruta_id = self._ruta_en_proceso()
+        self.autenticar(self.conductor)
+        cerrado = self.client.post(
+            f"/api/destinos/{self.destino.id}/cerrar/",
+            {
+                "resultado": "EXITOSO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "10:00",
+                "hora_fin_descarga": "10:20",
+            },
+            format="multipart",
+        )
+        self.assertEqual(cerrado.status_code, 200, cerrado.content)
+        evidencia_id = self.destino.evidencias.get().id
+        self.autenticar(self.admin)
+        sin_foto = self.client.post(
+            f"/api/destinos/{self.destino.id}/corregir/",
+            {"resultado": "EXITOSO", "eliminar": evidencia_id},
+            format="multipart",
+        )
+        self.assertEqual(sin_foto.status_code, 400, sin_foto.content)
+        pendiente = self.client.post(
+            f"/api/destinos/{self.destino.id}/corregir/",
+            {"resultado": "PENDIENTE", "eliminar": evidencia_id, "observacion": "Falta la foto del receptor"},
+            format="multipart",
+        )
+        self.assertEqual(pendiente.status_code, 200, pendiente.content)
+        self.destino.refresh_from_db()
+        self.assertEqual(self.destino.estado, Destino.Estado.PENDIENTE)
+        self.assertEqual(self.destino.evidencias.count(), 0)
+        self.assertEqual(self.destino.observacion_cierre, "Falta la foto del receptor")
+        llegada = self.client.post(f"/api/rutas/{ruta_id}/llegada-base/")
+        self.assertEqual(llegada.status_code, 400, llegada.content)
+        self.autenticar(self.conductor)
+        entregada = self.client.post(
+            f"/api/destinos/{self.destino.id}/cerrar/",
+            {
+                "resultado": "EXITOSO",
+                "fotos": foto(),
+                "hora_inicio_descarga": "10:00",
+                "hora_fin_descarga": "10:30",
+            },
+            format="multipart",
+        )
+        self.assertEqual(entregada.status_code, 200, entregada.content)
+        self.destino.refresh_from_db()
+        self.assertEqual(self.destino.estado, Destino.Estado.EXITOSO)
+        self.assertEqual(self.destino.evidencias.count(), 1)
 
     def test_seguimiento_del_cliente_oculta_la_base_final(self):
         ruta_id = self._ruta_en_proceso()

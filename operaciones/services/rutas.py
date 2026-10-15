@@ -268,11 +268,6 @@ def _ajustar_paradas_en_proceso(ruta, destinos):
     actuales = list(ruta.paradas.select_related("destino"))
     ids_actuales = {parada.destino_id for parada in actuales}
     ids_nuevos = {destino.id for destino in destinos}
-    for parada in actuales:
-        if parada.destino_id in ids_nuevos:
-            continue
-        if parada.destino.estado in {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO}:
-            raise ValidationError({"destino_ids": ["No se puede quitar un destino exitoso o fallido."]})
     agregados = [destino for destino in destinos if destino.id not in ids_actuales]
     if RutaDestino.objects.filter(destino__in=agregados).exclude(ruta=ruta).exists():
         raise ValidationError({"destino_ids": ["Uno o más destinos ya pertenecen a otra ruta."]})
@@ -286,8 +281,10 @@ def _ajustar_paradas_en_proceso(ruta, destinos):
     quitados = [parada.destino_id for parada in actuales if parada.destino_id not in ids_nuevos]
     _reemplazar_paradas(ruta, destinos)
     if quitados:
-        Destino.objects.filter(pk__in=quitados, estado=Destino.Estado.EN_PROCESO).update(
-            estado=Destino.Estado.NO_INICIADO
+        Destino.objects.filter(pk__in=quitados).exclude(estado=Destino.Estado.NO_INICIADO).update(
+            estado=Destino.Estado.NO_INICIADO,
+            motivo=None,
+            observacion_cierre="",
         )
     if agregados:
         Destino.objects.filter(pk__in=[destino.id for destino in agregados]).update(
