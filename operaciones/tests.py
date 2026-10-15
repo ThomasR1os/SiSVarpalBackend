@@ -363,6 +363,37 @@ class ReglasApiTests(TestCase):
         self.destino.refresh_from_db()
         self.assertEqual(self.destino.estado, Destino.Estado.EN_PROCESO)
 
+    def test_ruta_en_proceso_permite_cambiar_auxiliares(self):
+        auxiliar = Usuario.objects.create(
+            username="auxiliar",
+            email="auxiliar@varpal.local",
+            password=make_password(CLAVE),
+            nombre="Rosa",
+            apellido="Quispe",
+            documento="44556677",
+            rol=Rol.objects.get(nombre=Rol.Nombre.AUXILIAR),
+        )
+        ruta_id = self._ruta_en_proceso()
+        self.autenticar(self.admin)
+        agregada = self.client.patch(
+            f"/api/rutas/{ruta_id}/",
+            {"auxiliar_ids": [auxiliar.id]},
+            format="json",
+        )
+        self.assertEqual(agregada.status_code, 200, agregada.content)
+        self.assertEqual(agregada.data["estado"], Ruta.Estado.EN_PROCESO)
+        self.assertEqual([persona["id"] for persona in agregada.data["auxiliares"]], [auxiliar.id])
+        self.assertEqual(agregada.data["conductor"]["id"], self.conductor.id)
+        vacia = self.client.patch(f"/api/rutas/{ruta_id}/", {"auxiliar_ids": []}, format="json")
+        self.assertEqual(vacia.status_code, 200, vacia.content)
+        self.assertEqual(vacia.data["auxiliares"], [])
+        otro = self.client.patch(
+            f"/api/rutas/{ruta_id}/",
+            {"conductor_id": self.conductor.id, "auxiliar_ids": [auxiliar.id]},
+            format="json",
+        )
+        self.assertEqual(otro.status_code, 400, otro.content)
+
     def test_cierre_exige_foto_y_motivo_si_falla(self):
         ruta_id = self._ruta_en_proceso()
         self.autenticar(self.conductor)

@@ -296,6 +296,15 @@ def _ajustar_paradas_en_proceso(ruta, destinos):
     return recalcular_ruta(ruta)
 
 
+def _ajustar_auxiliares_en_proceso(ruta, auxiliares):
+    _validar_auxiliares(auxiliares, ruta.conductor)
+    ruta.auxiliares.all().delete()
+    RutaAuxiliar.objects.bulk_create(
+        [RutaAuxiliar(ruta=ruta, usuario=usuario) for usuario in auxiliares]
+    )
+    return ruta
+
+
 @transaction.atomic
 def agregar_traslado(ruta, usuario, sede, codigo_externo, motivo_servicio, observaciones=""):
     if usuario.rol_nombre != Rol.Nombre.CONDUCTOR or ruta.conductor_id != usuario.id:
@@ -326,6 +335,8 @@ def agregar_traslado(ruta, usuario, sede, codigo_externo, motivo_servicio, obser
 def actualizar_ruta(ruta, datos):
     if ruta.estado == Ruta.Estado.EN_PROCESO and set(datos) == {"destinos"}:
         return _ajustar_paradas_en_proceso(ruta, datos["destinos"])
+    if ruta.estado == Ruta.Estado.EN_PROCESO and set(datos) == {"auxiliares"}:
+        return _ajustar_auxiliares_en_proceso(ruta, datos["auxiliares"])
     if ruta.estado not in ESTADOS_EDITABLES:
         raise ValidationError({"detail": "Solo se edita una ruta que no ha iniciado."})
     cliente = ruta.cliente
