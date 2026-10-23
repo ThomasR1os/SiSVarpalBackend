@@ -98,6 +98,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:5173",
     "https://sisvarpalfronted.vercel.app",
     "https://sisvarpal.netlify.app",
+    "https://sis.varpalsl.com",
 ]
 
 REST_FRAMEWORK = {
