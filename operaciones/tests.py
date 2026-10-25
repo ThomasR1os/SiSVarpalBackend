@@ -474,6 +474,59 @@ class ReglasApiTests(TestCase):
         self.assertEqual(fin_antes.status_code, 400, fin_antes.content)
         self.assertIn("hora_fin_descarga", fin_antes.data["errores"])
 
+    def test_cerrar_fuera_de_orden_renumera_las_paradas(self):
+        self.autenticar(self.admin)
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            creada = self.client.post(
+                "/api/rutas/",
+                {
+                    "cliente_id": self.cliente.id,
+                    "fecha": self.hoy.isoformat(),
+                    "conductor_id": self.conductor.id,
+                    "vehiculo_id": self.vehiculo.id,
+                    "destino_ids": [self.destino.id, self.destino_lejos.id],
+                },
+                format="json",
+            )
+        self.assertEqual(creada.status_code, 201, creada.content)
+        ruta_id = creada.data["id"]
+        self.client.post(f"/api/rutas/{ruta_id}/confirmar/")
+        self.autenticar(self.conductor)
+        self.client.post(f"/api/rutas/{ruta_id}/iniciar/")
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            cerrado = self.client.post(
+                f"/api/destinos/{self.destino_lejos.id}/cerrar/",
+                {
+                    "resultado": "EXITOSO",
+                    "fotos": foto(),
+                    "hora_inicio_descarga": "10:00",
+                    "hora_fin_descarga": "10:20",
+                },
+                format="multipart",
+            )
+        self.assertEqual(cerrado.status_code, 200, cerrado.content)
+        ruta = self.client.get(f"/api/rutas/{ruta_id}/")
+        self.assertEqual(
+            [parada["destino_id"] for parada in ruta.data["paradas"]],
+            [self.destino_lejos.id, self.destino.id],
+        )
+        self.assertEqual([parada["orden"] for parada in ruta.data["paradas"]], [1, 2])
+
+    def test_georeferenciar_mueve_el_destino_en_proceso(self):
+        self._ruta_en_proceso()
+        self.autenticar(self.conductor)
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            respuesta = self.client.post(
+                f"/api/destinos/{self.destino.id}/georeferenciar/",
+                {"latitud": -12.08, "longitud": -77.05},
+                format="json",
+            )
+        self.assertEqual(respuesta.status_code, 200, respuesta.content)
+        self.assertEqual(respuesta.data["latitud"], "-12.08")
+        self.assertEqual(respuesta.data["longitud"], "-77.05")
+        self.destino.refresh_from_db()
+        self.assertEqual(coordenada_texto(self.destino.latitud), "-12.08")
+
     def test_corregir_puede_dejar_la_evidencia_pendiente(self):
         ruta_id = self._ruta_en_proceso()
         self.autenticar(self.conductor)
@@ -777,6 +830,28 @@ class ReglasApiTests(TestCase):
             format="json",
         )
         self.assertEqual(prohibido.status_code, 403, prohibido.content)
+
+    def test_se_puede_salir_de_varpal_y_llegar_al_cliente(self):
+        varpal = Punto.objects.get(cliente__isnull=True, es_principal=True)
+        cliente = Punto.objects.get(cliente=self.cliente, es_principal=True)
+        self.autenticar(self.admin)
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            creada = self.client.post(
+                "/api/rutas/",
+                {
+                    "cliente_id": self.cliente.id,
+                    "fecha": self.hoy.isoformat(),
+                    "conductor_id": self.conductor.id,
+                    "vehiculo_id": self.vehiculo.id,
+                    "destino_ids": [self.destino.id],
+                    "base_origen_id": varpal.id,
+                    "base_final_id": cliente.id,
+                },
+                format="json",
+            )
+        self.assertEqual(creada.status_code, 201, creada.content)
+        self.assertEqual(creada.data["base_origen"]["id"], varpal.id)
+        self.assertEqual(creada.data["base_final"]["id"], cliente.id)
 
     def test_el_mapa_sale_de_varpal_si_todos_son_recojo(self):
         self.destino.tipo_servicio = Destino.TipoServicio.RECOJO

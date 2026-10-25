@@ -1,5 +1,4 @@
 import django_filters
-from django.db.models import ProtectedError
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -18,6 +17,7 @@ from operaciones.serializers import (
     DestinoSerializer,
     DestinoWriteSerializer,
     EvidenciaSerializer,
+    GeoreferenciaSerializer,
     NotificacionSerializer,
     OptimizarSerializer,
     OrdenSerializer,
@@ -27,13 +27,15 @@ from operaciones.serializers import (
     RutaWriteSerializer,
     TrasladoConductorSerializer,
 )
-from operaciones.services.destinos import cerrar_destino, corregir_cierre, reprogramar_destino
+from operaciones.services.destinos import cerrar_destino, corregir_cierre, georeferenciar_destino, reprogramar_destino
 from operaciones.services.importacion import importar_destinos, importar_rutas
 from operaciones.services.rutas import (
     aplicar_orden,
     agregar_traslado,
     cancelar_ruta,
     confirmar_llegada,
+    eliminar_destino,
+    eliminar_ruta,
     confirmar_ruta,
     destinos_visibles,
     iniciar_ruta,
@@ -95,13 +97,7 @@ class DestinoViewSet(viewsets.ModelViewSet):
         return Response(DestinoSerializer(destino).data)
 
     def destroy(self, request, *args, **kwargs):
-        destino = self.get_object()
-        if destino.estado != Destino.Estado.NO_INICIADO or hasattr(destino, "asignacion"):
-            raise ValidationError({"detail": "Solo se elimina un destino que no ha iniciado y no está en una ruta."})
-        try:
-            destino.delete()
-        except ProtectedError as exc:
-            raise ValidationError({"detail": "El destino está en uso."}) from exc
+        eliminar_destino(self.get_object())
         return Response(status=204)
 
     @action(detail=True, methods=["post"])
@@ -128,6 +124,20 @@ class DestinoViewSet(viewsets.ModelViewSet):
             usuario=request.user,
             hora_inicio_descarga=serializer.validated_data["hora_inicio_descarga"],
             hora_fin_descarga=serializer.validated_data["hora_fin_descarga"],
+        )
+        return Response(DestinoSerializer(destino).data)
+
+    @action(detail=True, methods=["post"])
+    def georeferenciar(self, request, pk=None):
+        destino = self.get_object()
+        if not puede_operar_parada(request.user, destino):
+            raise PermissionDenied("No puede georeferenciar este destino.")
+        serializer = GeoreferenciaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        destino = georeferenciar_destino(
+            destino,
+            serializer.validated_data["latitud"],
+            serializer.validated_data["longitud"],
         )
         return Response(DestinoSerializer(destino).data)
 
@@ -185,13 +195,14 @@ class RutaFilter(django_filters.FilterSet):
 class RutaViewSet(viewsets.ModelViewSet):
     filterset_class = RutaFilter
     ordering_fields = ["fecha", "id", "estado"]
-    http_method_names = ["get", "post", "patch", "head", "options"]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_permissions(self):
         if self.action in {
             "create",
             "partial_update",
             "update",
+            "destroy",
             "confirmar",
             "cancelar",
             "orden",
@@ -226,6 +237,10 @@ class RutaViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         ruta = serializer.save()
         return Response(self._leer(ruta))
+
+    def destroy(self, request, *args, **kwargs):
+        eliminar_ruta(self.get_object())
+        return Response(status=204)
 
     def _leer(self, ruta):
         ruta = rutas_visibles(self.request.user).get(pk=ruta.pk)

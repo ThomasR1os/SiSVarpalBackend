@@ -207,14 +207,14 @@ class RutaWriteSerializer(serializers.Serializer):
     )
     base_origen_id = serializers.PrimaryKeyRelatedField(
         source="base_origen",
-        queryset=Punto.objects.filter(es_base_origen=True, activo=True),
+        queryset=Punto.objects.filter(activo=True),
         required=False,
         allow_null=True,
         default=None,
     )
     base_final_id = serializers.PrimaryKeyRelatedField(
         source="base_final",
-        queryset=Punto.objects.filter(es_base_final=True, activo=True),
+        queryset=Punto.objects.filter(activo=True),
         required=False,
         allow_null=True,
         default=None,
@@ -257,13 +257,13 @@ class OptimizarSerializer(serializers.Serializer):
     fecha = serializers.DateField()
     base_origen_id = serializers.PrimaryKeyRelatedField(
         source="base_origen",
-        queryset=Punto.objects.filter(es_base_origen=True, activo=True),
+        queryset=Punto.objects.filter(activo=True),
         required=False,
         allow_null=True,
     )
     base_final_id = serializers.PrimaryKeyRelatedField(
         source="base_final",
-        queryset=Punto.objects.filter(es_base_final=True, activo=True),
+        queryset=Punto.objects.filter(activo=True),
         required=False,
         allow_null=True,
     )
@@ -359,6 +359,11 @@ class CorregirCierreSerializer(serializers.Serializer):
         allow_null=True,
     )
     observacion = serializers.CharField(required=False, allow_blank=True)
+
+
+class GeoreferenciaSerializer(serializers.Serializer):
+    latitud = CoordenadaField()
+    longitud = CoordenadaField()
 
 
 class CierreSerializer(serializers.Serializer):

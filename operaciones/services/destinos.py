@@ -261,6 +261,24 @@ def cerrar_destino(
                 "hora_fin_descarga",
             ]
         )
+    if asignacion is not None:
+        try:
+            from .rutas import reordenar_segun_entregas
+
+            reordenar_segun_entregas(asignacion.ruta)
+        except Exception:
+            logger.exception("No se pudo reordenar la ruta %s tras cerrar el destino %s.", asignacion.ruta_id, destino.pk)
+    return destino
+
+
+def georeferenciar_destino(destino, latitud, longitud):
+    if destino.estado not in {Destino.Estado.EN_PROCESO, Destino.Estado.PENDIENTE}:
+        raise ValidationError({"detail": "Solo se georeferencia un destino que está en proceso."})
+    latitud, longitud = validar_coordenadas(latitud, longitud)
+    destino.latitud = latitud
+    destino.longitud = longitud
+    destino.save(update_fields=["latitud", "longitud", "actualizado_en"])
+    _recalcular_ruta_del_destino(destino)
     return destino
 
 

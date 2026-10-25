@@ -63,33 +63,24 @@ def _solo_recojos(destinos):
     return bool(destinos) and all(destino.tipo_servicio == Destino.TipoServicio.RECOJO for destino in destinos)
 
 
+def _base_de_la_operacion(punto, cliente):
+    if punto is None or not punto.activo:
+        return False
+    return punto.cliente_id is None or punto.cliente_id == cliente.id
+
+
 def base_inicial_para(cliente, destinos, origen_actual=None):
-    # Todos recojo: el camión sale de Varpal. Con una entrega, sale de la base del cliente.
-    if _solo_recojos(destinos):
-        return base_final_empresa()
-    if (
-        origen_actual is not None
-        and origen_actual.cliente_id == cliente.id
-        and origen_actual.es_base_origen
-        and origen_actual.activo
-    ):
+    if _base_de_la_operacion(origen_actual, cliente):
         return origen_actual
+    if destinos is not None and _solo_recojos(destinos):
+        return base_final_empresa()
     return base_origen_cliente(cliente)
 
 
 def _validar_bases(cliente, base_origen, base_final, destinos=None):
-    if destinos is not None:
-        base_origen = base_inicial_para(cliente, destinos, base_origen)
-    elif base_origen is None:
-        base_origen = base_origen_cliente(cliente)
-    es_varpal = base_origen.cliente_id is None and base_origen.es_principal and base_origen.activo
-    es_cliente = base_origen.cliente_id == cliente.id and base_origen.es_base_origen and base_origen.activo
-    if not es_varpal and not es_cliente:
-        raise ValidationError({"base_origen_id": ["La base de origen debe ser una base activa del cliente."]})
-    if base_final is None:
+    base_origen = base_inicial_para(cliente, destinos, base_origen)
+    if not _base_de_la_operacion(base_final, cliente):
         base_final = base_final_empresa()
-    if base_final.cliente_id is not None or not base_final.es_base_final or not base_final.activo:
-        raise ValidationError({"base_final_id": ["La base final debe ser una base activa de la empresa."]})
     return base_origen, base_final
 
 
@@ -391,6 +382,35 @@ def actualizar_ruta(ruta, datos):
     return recalcular_ruta(ruta)
 
 
+ATENDIDOS = {Destino.Estado.EXITOSO, Destino.Estado.FALLIDO, Destino.Estado.PENDIENTE}
+
+
+def reordenar_segun_entregas(ruta):
+    if ruta.estado != Ruta.Estado.EN_PROCESO:
+        return ruta
+    paradas = list(ruta.paradas.select_related("destino").order_by("orden"))
+
+    def momento(parada):
+        return parada.hora_salida or parada.hora_llegada
+
+    atendidas = sorted(
+        (parada for parada in paradas if parada.destino.estado in ATENDIDOS),
+        key=lambda parada: (momento(parada) is None, momento(parada) or timezone.now(), parada.orden),
+    )
+    pendientes = [parada for parada in paradas if parada.destino.estado not in ATENDIDOS]
+    nuevo = atendidas + pendientes
+    if [parada.destino_id for parada in nuevo] == [parada.destino_id for parada in paradas]:
+        return ruta
+    with transaction.atomic():
+        for indice, parada in enumerate(paradas, start=1):
+            parada.orden = 10000 + indice
+            parada.save(update_fields=["orden"])
+        for orden, parada in enumerate(nuevo, start=1):
+            parada.orden = orden
+            parada.save(update_fields=["orden"])
+    return recalcular_ruta(ruta)
+
+
 def aplicar_orden(ruta, destino_ids):
     if ruta.estado not in ESTADOS_EDITABLES:
         raise ValidationError({"detail": "Solo se reordena una ruta que no ha iniciado."})
@@ -468,6 +488,31 @@ def confirmar_llegada(ruta, usuario):
     ruta.finalizada_en = ahora
     ruta.save(update_fields=["estado", "llegada_base_en", "finalizada_en", "actualizado_en"])
     return ruta
+
+
+@transaction.atomic
+def eliminar_ruta(ruta):
+    Destino.objects.filter(asignacion__ruta=ruta, estado=Destino.Estado.EN_PROCESO).update(
+        estado=Destino.Estado.NO_INICIADO
+    )
+    ruta.delete()
+
+
+@transaction.atomic
+def eliminar_destino(destino):
+    asignacion = RutaDestino.objects.select_related("ruta").filter(destino=destino).first()
+    ruta = asignacion.ruta if asignacion is not None else None
+    if asignacion is not None:
+        asignacion.delete()
+    destino.delete()
+    if ruta is None:
+        return
+    if not ruta.paradas.exists():
+        ruta.estado = Ruta.Estado.CANCELADA
+        ruta.save(update_fields=["estado", "actualizado_en"])
+        return
+    if ruta.estado in {Ruta.Estado.BORRADOR, Ruta.Estado.NO_INICIADA, Ruta.Estado.EN_PROCESO}:
+        recalcular_ruta(ruta)
 
 
 @transaction.atomic
