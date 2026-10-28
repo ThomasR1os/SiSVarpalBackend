@@ -52,6 +52,9 @@ class DestinoSerializer(serializers.ModelSerializer):
             "motivo_id",
             "motivo_descripcion",
             "observacion_cierre",
+            "reprogramacion_pendiente",
+            "fecha_anterior",
+            "motivo_reprogramacion",
             "ruta_id",
             "hora_inicio_descarga",
             "hora_fin_descarga",
@@ -359,6 +362,11 @@ class CorregirCierreSerializer(serializers.Serializer):
         allow_null=True,
     )
     observacion = serializers.CharField(required=False, allow_blank=True)
+
+
+class SolicitudReprogramacionSerializer(serializers.Serializer):
+    fecha = serializers.DateField()
+    motivo = serializers.CharField(max_length=500)
 
 
 class GeoreferenciaSerializer(serializers.Serializer):

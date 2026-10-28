@@ -13,7 +13,7 @@ from catalogos.lima import POLIGONO_LIMA_METROPOLITANA
 from config.coordenadas import coordenada_texto
 from catalogos.models import Cliente, Empresa, Geocerca, Motivo, Punto, Vehiculo
 from catalogos.services import sincronizar_punto_cliente, sincronizar_punto_empresa
-from operaciones.models import Destino, Evidencia, Ruta
+from operaciones.models import Destino, Evidencia, Ruta, RutaDestino
 from operaciones.services.calles import MotorNoDisponible
 from usuarios.models import Rol, Usuario
 
@@ -526,6 +526,36 @@ class ReglasApiTests(TestCase):
         self.assertEqual(respuesta.data["longitud"], "-77.05")
         self.destino.refresh_from_db()
         self.assertEqual(coordenada_texto(self.destino.latitud), "-12.08")
+
+    def test_reprogramar_saca_el_destino_de_la_ruta_y_avisa_al_admin(self):
+        ruta_id = self._ruta_en_proceso()
+        fecha_original = self.destino.fecha
+        manana = (timezone.localdate() + timedelta(days=1)).isoformat()
+        self.autenticar(self.conductor)
+        mismo_dia = self.client.post(
+            f"/api/destinos/{self.destino.id}/solicitar-reprogramacion/",
+            {"fecha": timezone.localdate().isoformat(), "motivo": "Cliente ausente"},
+            format="json",
+        )
+        self.assertEqual(mismo_dia.status_code, 400, mismo_dia.content)
+        with patch("operaciones.services.calles.pedir_ruta", side_effect=MotorNoDisponible("caído")):
+            respuesta = self.client.post(
+                f"/api/destinos/{self.destino.id}/solicitar-reprogramacion/",
+                {"fecha": manana, "motivo": "Cliente pidió otro día"},
+                format="json",
+            )
+        self.assertEqual(respuesta.status_code, 200, respuesta.content)
+        self.destino.refresh_from_db()
+        self.assertTrue(self.destino.reprogramacion_pendiente)
+        self.assertEqual(self.destino.estado, Destino.Estado.NO_INICIADO)
+        self.assertEqual(self.destino.fecha_anterior, fecha_original)
+        self.assertEqual(self.destino.fecha.isoformat(), manana)
+        self.assertFalse(RutaDestino.objects.filter(destino=self.destino).exists())
+        self.assertEqual(Ruta.objects.get(pk=ruta_id).estado, Ruta.Estado.CANCELADA)
+        self.autenticar(self.admin)
+        lista = self.client.get("/api/destinos/", {"reprogramacion_pendiente": "true"})
+        self.assertEqual(lista.status_code, 200, lista.content)
+        self.assertEqual([item["id"] for item in lista.data["results"]], [self.destino.id])
 
     def test_corregir_puede_dejar_la_evidencia_pendiente(self):
         ruta_id = self._ruta_en_proceso()

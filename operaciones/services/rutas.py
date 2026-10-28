@@ -144,6 +144,7 @@ def _reemplazar_paradas(ruta, destinos):
         else:
             parada.orden = orden
             parada.save(update_fields=["orden"])
+    _atender_reprogramaciones(destinos)
 
 
 def recalcular_ruta(ruta):
@@ -248,7 +249,62 @@ def crear_ruta(*, cliente, fecha, conductor, vehiculo, auxiliares, base_origen, 
     RutaDestino.objects.bulk_create(
         [RutaDestino(ruta=ruta, destino=destino, orden=orden) for orden, destino in enumerate(destinos, start=1)]
     )
+    _atender_reprogramaciones(destinos)
     return recalcular_ruta(ruta)
+
+
+def _atender_reprogramaciones(destinos):
+    Destino.objects.filter(id__in=[destino.id for destino in destinos], reprogramacion_pendiente=True).update(
+        reprogramacion_pendiente=False
+    )
+
+
+def _numerar_paradas(ruta):
+    for orden, parada in enumerate(ruta.paradas.order_by("orden"), start=1):
+        if parada.orden != orden:
+            parada.orden = orden
+            parada.save(update_fields=["orden"])
+
+
+@transaction.atomic
+def solicitar_reprogramacion(destino, fecha, motivo):
+    if destino.estado not in {Destino.Estado.EN_PROCESO, Destino.Estado.PENDIENTE}:
+        raise ValidationError({"detail": "Solo se reprograma un destino que está en proceso."})
+    if fecha <= timezone.localdate():
+        raise ValidationError({"fecha": ["La nueva fecha debe ser posterior a hoy."]})
+    asignacion = RutaDestino.objects.select_related("ruta").filter(destino=destino).first()
+    ruta = asignacion.ruta if asignacion is not None else None
+    if asignacion is not None:
+        asignacion.delete()
+    destino.fecha_anterior = destino.fecha
+    destino.fecha = fecha
+    destino.estado = Destino.Estado.NO_INICIADO
+    destino.motivo = None
+    destino.observacion_cierre = ""
+    destino.reprogramacion_pendiente = True
+    destino.motivo_reprogramacion = motivo.strip()
+    destino.save(
+        update_fields=[
+            "fecha_anterior",
+            "fecha",
+            "estado",
+            "motivo",
+            "observacion_cierre",
+            "reprogramacion_pendiente",
+            "motivo_reprogramacion",
+            "actualizado_en",
+        ]
+    )
+    if ruta is None:
+        return destino
+    if not ruta.paradas.exists():
+        ruta.estado = Ruta.Estado.CANCELADA
+        ruta.save(update_fields=["estado", "actualizado_en"])
+        return destino
+    _numerar_paradas(ruta)
+    reordenar_segun_entregas(ruta)
+    recalcular_ruta(ruta)
+    return destino
 
 
 def _ajustar_paradas_en_proceso(ruta, destinos):

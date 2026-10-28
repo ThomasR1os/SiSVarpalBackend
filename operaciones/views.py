@@ -25,6 +25,7 @@ from operaciones.serializers import (
     ReprogramarSerializer,
     RutaSerializer,
     RutaWriteSerializer,
+    SolicitudReprogramacionSerializer,
     TrasladoConductorSerializer,
 )
 from operaciones.services.destinos import cerrar_destino, corregir_cierre, georeferenciar_destino, reprogramar_destino
@@ -46,6 +47,7 @@ from operaciones.services.rutas import (
     rutas_visibles,
     seguimiento_activo_para,
     sincronizar_origen,
+    solicitar_reprogramacion,
 )
 from usuarios.models import Rol
 from usuarios.permissions import EsAdministrador
@@ -56,7 +58,7 @@ class DestinoFilter(django_filters.FilterSet):
 
     class Meta:
         model = Destino
-        fields = ["cliente", "fecha", "estado", "tipo_servicio"]
+        fields = ["cliente", "fecha", "estado", "tipo_servicio", "reprogramacion_pendiente"]
 
     def filtrar_sin_ruta(self, queryset, name, value):
         if value:
@@ -124,6 +126,20 @@ class DestinoViewSet(viewsets.ModelViewSet):
             usuario=request.user,
             hora_inicio_descarga=serializer.validated_data["hora_inicio_descarga"],
             hora_fin_descarga=serializer.validated_data["hora_fin_descarga"],
+        )
+        return Response(DestinoSerializer(destino).data)
+
+    @action(detail=True, methods=["post"], url_path="solicitar-reprogramacion")
+    def solicitar_reprogramacion(self, request, pk=None):
+        destino = self.get_object()
+        if not puede_operar_parada(request.user, destino):
+            raise PermissionDenied("No puede reprogramar este destino.")
+        serializer = SolicitudReprogramacionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        destino = solicitar_reprogramacion(
+            destino,
+            serializer.validated_data["fecha"],
+            serializer.validated_data["motivo"],
         )
         return Response(DestinoSerializer(destino).data)
 

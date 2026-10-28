@@ -179,7 +179,8 @@ def reprogramar_destino(destino, fecha):
     with transaction.atomic():
         _desvincular_si_cambia_fecha(destino, fecha)
         destino.fecha = fecha
-        destino.save(update_fields=["fecha", "actualizado_en"])
+        destino.reprogramacion_pendiente = False
+        destino.save(update_fields=["fecha", "reprogramacion_pendiente", "actualizado_en"])
     return destino
 
 

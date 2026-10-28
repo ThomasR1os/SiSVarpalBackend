@@ -55,6 +55,9 @@ class Destino(models.Model):
         related_name="destinos",
     )
     observacion_cierre = models.TextField(blank=True)
+    reprogramacion_pendiente = models.BooleanField(default=False)
+    fecha_anterior = models.DateField(null=True, blank=True)
+    motivo_reprogramacion = models.TextField(blank=True)
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
